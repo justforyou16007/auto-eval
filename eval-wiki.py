@@ -16,15 +16,16 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------------------
 
 VALID_EDGE_TYPES = {
-    "extends",
-    "covers_gap",
+    "env_for",
+    "rubric_for",
     "tested_by",
-    "depends_on",
+    "uses_env",
     "scored_by",
     "supports",
     "invalidates",
-    "addresses",
-    "supersedes",
+    "addresses_gap",
+    "evolved_from",
+    "revise",
 }
 
 ENTITY_DIRS = ["tasks", "environments", "rubrics", "runs", "feedback"]
@@ -412,14 +413,23 @@ def add_task(
     # Build body
     body = f"""# {title}
 
-## Description
-_DESCRIPTION_
+## 测试目标
+_TODO: this task 要验证 Agent 的什么能力_
 
-## Setup
-_TODO: environment requirements_
+## 输入规格
+_TODO: Agent 接收的初始输入/prompt_
 
-## Expected Flow
-_TODO: step-by-step expected agent behavior_
+## 预期输出
+_TODO: 期望的行为描述，非精确输出_
+
+## 前置条件
+_TODO: 环境状态、mock 服务配置要求_
+
+## 边界条件
+_TODO: Agent 不应做的事情、禁止的行为_
+
+## Connections
+_Edges are recorded in `graph/edges.jsonl`; summarize here for human readers._
 """
 
     # Write file
@@ -594,6 +604,10 @@ def add_rubric(
         body_lines.append("...")
         body_lines.append("")
 
+    body_lines.extend(["", "## Honest scope"])
+    body_lines.append("_What this rubric does NOT evaluate; banned interpretations; flagged edge cases._")
+    body_lines.extend(["", "## Connections"])
+    body_lines.append("_Edges are recorded in `graph/edges.jsonl`; summarize here for human readers._")
     body = "\n".join(body_lines)
 
     content = render_yaml_frontmatter(fm) + "\n" + body
@@ -896,12 +910,64 @@ def rebuild_query_pack(wiki_root: str):
     else:
         sections.append("No EVAL_CONFIG.md found")
 
-    # 2. Top 5 gaps
+    # 2. Top 5 gaps (ranked by gap_score formula from design doc §9.2)
     sections.append("")
     gap_path = os.path.join(wiki_root, "gap_map.md")
     if os.path.isfile(gap_path):
         with open(gap_path, "r", encoding="utf-8") as f:
-            sections.append(f.read()[:1200])
+            gap_text = f.read()
+        # Parse gap IDs from gap_map.md
+        import re as _re
+        gap_ids = _re.findall(r'(?:^|\s)(G\d+)', gap_text)
+        gap_ids = list(dict.fromkeys(gap_ids))  # dedup preserving order
+
+        # Count linked tasks and failed runs per gap
+        tasks_dir = os.path.join(wiki_root, "tasks")
+        runs_dir = os.path.join(wiki_root, "runs")
+        linked_tasks = {gid: 0 for gid in gap_ids}
+        failed_runs = {gid: 0 for gid in gap_ids}
+
+        if os.path.isdir(tasks_dir):
+            for fname in os.listdir(tasks_dir):
+                if fname.endswith(".md"):
+                    fm = load_yaml_frontmatter(os.path.join(tasks_dir, fname))
+                    for cg in fm.get("coverage_gaps", []):
+                        gid = cg.replace("gap:", "")
+                        if gid in linked_tasks:
+                            linked_tasks[gid] += 1
+
+        if os.path.isdir(runs_dir):
+            for fname in os.listdir(runs_dir):
+                if fname.endswith(".md"):
+                    fm = load_yaml_frontmatter(os.path.join(runs_dir, fname))
+                    if fm.get("verdict") == "no":
+                        task_id = fm.get("task_id", "")
+                        # Find which gaps that task covers
+                        task_slug = task_id.replace("task:", "")
+                        task_path = os.path.join(tasks_dir, f"{task_slug}.md")
+                        if os.path.isfile(task_path):
+                            tfm = load_yaml_frontmatter(task_path)
+                            for cg in tfm.get("coverage_gaps", []):
+                                gid = cg.replace("gap:", "")
+                                if gid in failed_runs:
+                                    failed_runs[gid] += 1
+
+        # Compute gap_score: (unresolved ? 2 : 0) + (linked_tasks == 0 ? 3 : 0) + (failed_runs > 0 ? 1 : 0)
+        scored_gaps = []
+        for gid in gap_ids:
+            lt = linked_tasks.get(gid, 0)
+            fr = failed_runs.get(gid, 0)
+            unresolved = lt == 0  # no linked tasks means unresolved
+            score = (2 if unresolved else 0) + (3 if lt == 0 else 0) + (1 if fr > 0 else 0)
+            scored_gaps.append((gid, score, lt, fr))
+
+        scored_gaps.sort(key=lambda x: -x[1])
+        top_gaps = scored_gaps[:5]
+
+        gap_lines = []
+        for gid, score, lt, fr in top_gaps:
+            gap_lines.append(f"- gap:{gid} (score={score}, tasks={lt}, failed_runs={fr})")
+        sections.append("\n".join(gap_lines)[:1200])
     else:
         sections.append("_No gap_map.md found._")
 
