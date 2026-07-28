@@ -10,20 +10,32 @@ resolution chain.
 
 ## Resolution Chain
 
+The resolution chain checks paths in priority order. The first match wins.
+
 ```bash
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
 
-# 1. Check for installed copy via .eval/installed-skills.txt
-EVAL_REPO="${EVAL_REPO:-$(awk -F'\t' '$1=="repo_root"{print $2; exit}' .eval/installed-skills.txt 2>/dev/null)}"
-
-# 2. Check .eval/dist/tools/eval-wiki.py (installed via install_eval_wiki.sh)
+# 1. Project-level installed copy (created by install_eval_wiki.sh)
+#    This is the primary path when the script was installed into the
+#    target project via `bash /path/to/auto-eval/tools/install_eval_wiki.sh`
 EVAL_WIKI_SCRIPT=".eval/dist/tools/eval-wiki.py"
 
-# 3. Fall back to canonical dist path
+# 2. Fall back to legacy dist path (within the auto-eval repo itself)
 [ -f "$EVAL_WIKI_SCRIPT" ] || EVAL_WIKI_SCRIPT="dist/tools/eval-wiki.py"
 
-# 4. Fall back to EVAL_REPO path
-[ -f "$EVAL_WIKI_SCRIPT" ] || { [ -n "${EVAL_REPO:-}" ] && EVAL_WIKI_SCRIPT="$EVAL_REPO/dist/tools/eval-wiki.py"; }
+# 3. Fall back to AUTOEVAL_REPO environment variable or auto-detected repo
+[ -f "$EVAL_WIKI_SCRIPT" ] || {
+    EVAL_REPO="${AUTOEVAL_REPO:-}"
+    # Auto-detect by walking up parent directories
+    if [ -z "$EVAL_REPO" ]; then
+        CANDIDATE="$(pwd)"
+        while [ "$CANDIDATE" != "/" ]; do
+            [ -f "$CANDIDATE/src/tools/eval-wiki.py" ] && { EVAL_REPO="$CANDIDATE"; break; }
+            CANDIDATE="$(dirname "$CANDIDATE")"
+        done
+    fi
+    [ -n "$EVAL_REPO" ] && EVAL_WIKI_SCRIPT="$EVAL_REPO/dist/tools/eval-wiki.py"
+}
 ```
 
 ## Variants

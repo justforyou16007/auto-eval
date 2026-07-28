@@ -165,15 +165,20 @@ Tracks coverage gaps with stable IDs (G1, G2, ...). Each gap is scored by:
 ### 1. Install
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd eval-wiki
+# Clone the auto-eval repository (one-time)
+git clone <repo-url> ~/auto-eval
 
-# Install eval-wiki as a local tool
-bash tools/install_eval_wiki.sh
+# Then install into your target project directory
+cd my-project
+bash ~/auto-eval/tools/install_eval_wiki.sh
 
-# The script creates a symlink at .eval/dist/tools/eval-wiki.py
-# and records the repo root in .eval/installed-skills.txt
+# Or specify the target project directly:
+#   bash ~/auto-eval/tools/install_eval_wiki.sh /path/to/my-project
+
+# The script creates:
+#   - .claude/skills/<skill-name> symlinks (8 skills)
+#   - .eval/dist/tools/<tool-name> symlinks (7 tools)
+#   - .eval/installed-skills.txt manifest
 ```
 
 The repo becomes a set of skills loadable by any agent harness. No direct CLI usage is required — all interaction happens through skill invocations inside the agent.

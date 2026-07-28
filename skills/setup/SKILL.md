@@ -21,25 +21,55 @@ question.
 
 ## Helper Resolution Chain
 
-Resolve `$EVAL_WIKI_SCRIPT` via the shared chain (Variant A — hard-fail):
+Resolve `$EVAL_WIKI_SCRIPT` via the shared chain (Variant A — hard-fail), and
+discover available skills from `.claude/skills/` (ARIS-style install) or the
+auto-eval repo's `skills/` directory.
 
 ```bash
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
 
-# 1. Check for installed copy in .eval
-EVAL_REPO="${EVAL_REPO:-$(awk -F'\t' '$1=="repo_root"{print $2; exit}' .eval/installed-skills.txt 2>/dev/null)}"
+# --- Resolve $EVAL_WIKI_SCRIPT ---
+
+# 1. Project-level installed copy (created by install_eval_wiki.sh)
 EVAL_WIKI_SCRIPT=".eval/dist/tools/eval-wiki.py"
 
-# 2. Fall back to canonical dist path
+# 2. Fall back to legacy dist path (within the auto-eval repo itself)
 [ -f "$EVAL_WIKI_SCRIPT" ] || EVAL_WIKI_SCRIPT="dist/tools/eval-wiki.py"
 
-# 3. Fall back to EVAL_REPO
-[ -f "$EVAL_WIKI_SCRIPT" ] || { [ -n "${EVAL_REPO:-}" ] && EVAL_WIKI_SCRIPT="$EVAL_REPO/dist/tools/eval-wiki.py"; }
+# 3. Fall back to AUTOEVAL_REPO or auto-detected repo
+[ -f "$EVAL_WIKI_SCRIPT" ] || {
+    EVAL_REPO="${AUTOEVAL_REPO:-}"
+    if [ -z "$EVAL_REPO" ]; then
+        CANDIDATE="$(pwd)"
+        while [ "$CANDIDATE" != "/" ]; do
+            [ -f "$CANDIDATE/src/tools/eval-wiki.py" ] && { EVAL_REPO="$CANDIDATE"; break; }
+            CANDIDATE="$(dirname "$CANDIDATE")"
+        done
+    fi
+    [ -n "$EVAL_REPO" ] && EVAL_WIKI_SCRIPT="$EVAL_REPO/dist/tools/eval-wiki.py"
+}
 
 # 4. Hard fail — setup cannot proceed without eval-wiki
 if [ ! -f "$EVAL_WIKI_SCRIPT" ]; then
     echo "ERROR: eval-wiki.py not found. Run 'tools/install_eval_wiki.sh' first." >&2
     exit 1
+fi
+
+# --- Skill discovery ---
+
+# Check for skills installed via ARIS-style install (.claude/skills/)
+SKILLS_DIR=".claude/skills"
+if [ ! -d "$SKILLS_DIR" ]; then
+    # Fall back to the auto-eval repo's skills/ directory
+    AUTOEVAL_REPO="${AUTOEVAL_REPO:-}"
+    if [ -z "$AUTOEVAL_REPO" ]; then
+        CANDIDATE="$(dirname "$(dirname "$EVAL_WIKI_SCRIPT")")"
+        while [ "$CANDIDATE" != "/" ]; do
+            [ -d "$CANDIDATE/skills" ] && { AUTOEVAL_REPO="$CANDIDATE"; break; }
+            CANDIDATE="$(dirname "$CANDIDATE")"
+        done
+    fi
+    [ -n "$AUTOEVAL_REPO" ] && SKILLS_DIR="$AUTOEVAL_REPO/skills"
 fi
 ```
 
