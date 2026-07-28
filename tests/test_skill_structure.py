@@ -40,14 +40,16 @@ class TestSkillStructure(unittest.TestCase):
                             f"Broken symlink: {path}")
 
     def test_03_all_skill_md_files_exist(self):
-        """All 6 SKILL.md files exist."""
+        """All 8 SKILL.md files exist."""
         expected_skills = [
-            "eval-wiki",
-            "task-gen",
+            "auto-eval-pipeline",
             "env-gen",
-            "rubric-gen",
-            "report-gen",
+            "eval-wiki",
             "feedback-align",
+            "report-gen",
+            "rubric-gen",
+            "setup",
+            "task-gen",
         ]
         for skill in expected_skills:
             path = os.path.join(REPO_ROOT, "skills", skill, "SKILL.md")

@@ -27,19 +27,21 @@ The project is inspired by the **ARIS (Agent Runtime Integration Specification)*
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Layer 3: Skills                           │
-│  task-gen  │  env-gen  │  rubric-gen  │  report-gen  │ ...  │
-│  (DRIVE)   │  (DRIVE)  │  (ACQUIT)    │  (DRIVE)     │      │
-├─────────────────────────────────────────────────────────────┤
-│                    Layer 2: Tools                            │
-│  eval-wiki.py  │  capture-filter.py  │  run-state.py  │ ... │
-│  (7 CLI tools in src/tools/)                                │
-├─────────────────────────────────────────────────────────────┤
-│                    Layer 1: Contracts                        │
-│  shared-references/  (22 contract .md files)                │
-│  integration-contract, acceptance-gate, output-versioning…  │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Layer 3: Skills                                   │
+│  setup  │  auto-eval-pipeline  │  task-gen  │  env-gen  │  ...      │
+│ (DRIVE) │     (DRIVE)          │  (DRIVE)   │  (DRIVE)  │           │
+│  rubric-gen  │  report-gen  │  feedback-align  │  eval-wiki        │
+│  (ACQUIT)    │  (DRIVE)     │  (DRIVE+ACQUIT)  │  (TOOL)           │
+├─────────────────────────────────────────────────────────────────────┤
+│                    Layer 2: Tools                                    │
+│  eval-wiki.py  │  capture-filter.py  │  run-state.py  │ ...         │
+│  (7 CLI tools in src/tools/)                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                    Layer 1: Contracts                                │
+│  shared-references/  (22 contract .md files)                        │
+│  integration-contract, acceptance-gate, output-versioning…          │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Layer 1: Contracts (`shared-references/`)
@@ -70,8 +72,10 @@ The project is inspired by the **ARIS (Agent Runtime Integration Specification)*
 
 ### Layer 3: Skills (`skills/`)
 
-6 skill modules, each with a `SKILL.md` defining its interface, phases, and contracts:
+8 skill modules, each with a `SKILL.md` defining its interface, phases, and contracts:
 
+- `setup` (DRIVE) — Interactive Q&A setup wizard for new auto-eval projects
+- `auto-eval-pipeline` (DRIVE) — End-to-end pipeline driver (task-gen → env-gen → rubric-gen → report-gen)
 - `task-gen` (DRIVE) — Generate Agent eval tasks
 - `env-gen` (DRIVE) — Generate Docker environments
 - `rubric-gen` (ACQUIT) — Generate scoring rubrics + evaluator scripts
@@ -156,8 +160,9 @@ Tracks coverage gaps with stable IDs (G1, G2, ...). Each gap is scored by:
 - Python 3.12+
 - Docker (for env-gen stage)
 - Git
+- An agent harness (Claude Code, Codex CLI, Cursor, or any compatible agent)
 
-### Install
+### 1. Install
 
 ```bash
 # Clone the repository
@@ -171,66 +176,31 @@ bash tools/install_eval_wiki.sh
 # and records the repo root in .eval/installed-skills.txt
 ```
 
-### Usage Examples
+The repo becomes a set of skills loadable by any agent harness. No direct CLI usage is required — all interaction happens through skill invocations inside the agent.
 
-```bash
-# 1. Initialize a new eval-wiki
-python3 eval-wiki.py init my-eval/
+### 2. Setup
 
-# 2. Add a task
-python3 eval-wiki.py add-task my-eval/ \
-  --title "Test tool-calling correctness" \
-  --difficulty medium \
-  --scenario-type tool-chain \
-  --max-turns 5 \
-  --allowed-tools "search,read_file" \
-  --expected-behavior "correct tool call, proper error handling"
+In your agent harness, invoke the **`setup`** skill (e.g. type "初始化" or "setup project"). This runs an interactive 8-phase Q&A wizard that bootstraps:
 
-# 3. Add an environment
-python3 eval-wiki.py add-env my-eval/ \
-  --task-id "test-tool-calling-correctness" \
-  --image "python:3.11" \
-  --memory "512m" \
-  --cpus 1.0
+- `eval-wiki/` directory — the persistent knowledge base
+- `EVAL_CONFIG.md` — project configuration (difficulty, cost, scope, etc.)
+- `gap_map.md` — initial coverage gap analysis
+- Initial task templates
+- `.eval/setup-state.json` — resumable state for interrupted sessions
 
-# 4. Add a rubric (from criteria.json)
-python3 eval-wiki.py add-rubric my-eval/ \
-  --task-id "test-tool-calling-correctness" \
-  --criteria-json criteria.json
+The wizard is bilingual (en/zh) and provides smart defaults for every question. If interrupted, it resumes from the last completed phase.
 
-# 5. Add a run
-python3 eval-wiki.py add-run my-eval/ \
-  --task-id "test-tool-calling-correctness" \
-  --env-id "test-tool-calling-correctness-env" \
-  --rubric-id "test-tool-calling-correctness-rubric" \
-  --model "gpt-4" \
-  --verdict yes \
-  --confidence high
+### 3. Run Pipeline
 
-# 6. Add feedback
-python3 eval-wiki.py add-feedback my-eval/ \
-  --target-type task \
-  --target-id "task:test-tool-calling-correctness" \
-  --from user \
-  --issue-type misalignment \
-  --description "Should also test tool chaining" \
-  --action revise_task
+In your agent harness, invoke the **`auto-eval-pipeline`** skill (e.g. type "开始验证" or "run evaluation"). This drives the full 5-stage pipeline end-to-end:
 
-# 7. Add an edge between entities
-python3 eval-wiki.py add-edge my-eval/ \
-  --from "task:test-tool-calling-correctness" \
-  --to "task:test-tool-chaining" \
-  --type evolved_from
+1. **task-gen** — Generate Agent evaluation tasks from gap analysis
+2. **env-gen** — Generate Docker environments for each task
+3. **rubric-gen** — Generate scoring rubrics and evaluator scripts
+4. **(Agent runs)** — Agent executes tasks in the provisioned environments
+5. **report-gen** — Generate a single-page HTML verification report
 
-# 8. Query the wiki
-python3 eval-wiki.py query my-eval/ "tool-calling"
-
-# 9. Show statistics
-python3 eval-wiki.py stats my-eval/
-
-# 10. View the log
-python3 eval-wiki.py log my-eval/
-```
+Optionally iterate with **`feedback-align`** for user feedback alignment. The pipeline uses `run-state.py` for phase orchestration and resumability.
 
 ---
 
@@ -277,19 +247,23 @@ eval-wiki/
 │       ├── run-state.py             #   Pipeline state machine
 │       └── watchdog.py              #   Docker container monitor
 │
-├── skills/                          # Layer 3: Skills (6 modules)
-│   ├── task-gen/
-│   │   └── SKILL.md                 #   🟢 DRIVE — Generate eval tasks
+├── skills/                          # Layer 3: Skills (8 modules)
+│   ├── auto-eval-pipeline/
+│   │   └── SKILL.md                 #   🟢 DRIVE — End-to-end pipeline driver
 │   ├── env-gen/
 │   │   └── SKILL.md                 #   🟢 DRIVE — Generate Docker environments
-│   ├── rubric-gen/
-│   │   └── SKILL.md                 #   🔴 ACQUIT — Generate scoring rubrics
-│   ├── report-gen/
-│   │   └── SKILL.md                 #   🟢 DRIVE — Generate HTML reports
+│   ├── eval-wiki/
+│   │   └── SKILL.md                 #   ⚙️ TOOL — Knowledge base helper
 │   ├── feedback-align/
 │   │   └── SKILL.md                 #   🟢🔴 DRIVE+ACQUIT — Feedback loop
-│   └── eval-wiki/
-│       └── SKILL.md                 #   ⚙️ TOOL — Knowledge base helper
+│   ├── report-gen/
+│   │   └── SKILL.md                 #   🟢 DRIVE — Generate HTML reports
+│   ├── rubric-gen/
+│   │   └── SKILL.md                 #   🔴 ACQUIT — Generate scoring rubrics
+│   ├── setup/
+│   │   └── SKILL.md                 #   🟢 DRIVE — Interactive setup wizard
+│   └── task-gen/
+│       └── SKILL.md                 #   🟢 DRIVE — Generate eval tasks
 │
 ├── dist/tools/
 │   └── eval-wiki.py -> ../../src/tools/eval-wiki.py  # Symlink
