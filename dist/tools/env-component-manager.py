@@ -1,0 +1,1 @@
+../../src/tools/env-component-manager.py

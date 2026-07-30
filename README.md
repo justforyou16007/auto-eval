@@ -27,21 +27,21 @@ The project is inspired by the **ARIS (Agent Runtime Integration Specification)*
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Layer 3: Skills                                   │
-│  setup  │  auto-eval-pipeline  │  task-gen  │  env-gen  │  ...      │
-│ (DRIVE) │     (DRIVE)          │  (DRIVE)   │  (DRIVE)  │           │
-│  rubric-gen  │  report-gen  │  feedback-align  │  eval-wiki        │
-│  (ACQUIT)    │  (DRIVE)     │  (DRIVE+ACQUIT)  │  (TOOL)           │
-├─────────────────────────────────────────────────────────────────────┤
-│                    Layer 2: Tools                                    │
-│  eval-wiki.py  │  capture-filter.py  │  run-state.py  │ ...         │
-│  (7 CLI tools in src/tools/)                                        │
-├─────────────────────────────────────────────────────────────────────┤
-│                    Layer 1: Contracts                                │
-│  shared-references/  (22 contract .md files)                        │
-│  integration-contract, acceptance-gate, output-versioning…          │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Layer 3: Skills                                           │
+│  setup  │  auto-eval-pipeline  │  task-gen  │  env-gen  │  env-component-   │
+│ (DRIVE) │     (DRIVE)          │  (DRIVE)   │  (DRIVE)  │  manager (DRIVE)  │
+│  rubric-gen  │  report-gen  │  feedback-align  │  eval-wiki                │
+│  (ACQUIT)    │  (DRIVE)     │  (DRIVE+ACQUIT)  │  (TOOL)                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                    Layer 2: Tools                                            │
+│  eval-wiki.py  │  env-component-manager.py  │  capture-filter.py  │ ...     │
+│  (8 CLI tools in src/tools/)                                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                    Layer 1: Contracts                                        │
+│  shared-references/  (23 contract .md files)                                │
+│  integration-contract, acceptance-gate, output-versioning…                  │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Layer 1: Contracts (`shared-references/`)
@@ -58,11 +58,12 @@ The project is inspired by the **ARIS (Agent Runtime Integration Specification)*
 
 ### Layer 2: Tools (`src/tools/`)
 
-7 CLI tools that power the pipeline:
+8 CLI tools that power the pipeline:
 
 | Tool | Purpose |
 |------|---------|
-| `eval-wiki.py` | Persistent knowledge base CLI (init, add-task, add-env, add-rubric, add-run, add-feedback, add-edge, query, stats, log) |
+| `eval-wiki.py` | Persistent knowledge base CLI (init, add-task, add-scenario, add-env, add-rubric, add-run, add-feedback, add-edge, query, stats, log) |
+| `env-component-manager.py` | Tree-based environment component manager with lazy loading (init, register, list, search, assemble, fork, info, tree) |
 | `capture-filter.py` | Prevents runtime noise from being persisted as valid eval artifacts |
 | `evidence-check.py` | Verifies run evidence files exist and are non-empty |
 | `iteration-log.py` | Tracks convergence of feedback loops |
@@ -72,12 +73,13 @@ The project is inspired by the **ARIS (Agent Runtime Integration Specification)*
 
 ### Layer 3: Skills (`skills/`)
 
-8 skill modules, each with a `SKILL.md` defining its interface, phases, and contracts:
+9 skill modules, each with a `SKILL.md` defining its interface, phases, and contracts:
 
 - `setup` (DRIVE) — Interactive Q&A setup wizard for new auto-eval projects
 - `auto-eval-pipeline` (DRIVE) — End-to-end pipeline driver (task-gen → env-gen → rubric-gen → report-gen)
-- `task-gen` (DRIVE) — Generate Agent eval tasks
-- `env-gen` (DRIVE) — Generate Docker environments
+- `task-gen` (DRIVE) — Generate Agent eval tasks (AWM-style two-stage: scenario generation → task generation)
+- `env-gen` (DRIVE) — Generate Docker environments via component assembly + agent fine-tuning
+- `env-component-manager` (DRIVE) — Tree-based environment component manager with lazy loading
 - `rubric-gen` (ACQUIT) — Generate scoring rubrics + evaluator scripts
 - `report-gen` (DRIVE) — Generate HTML verification reports
 - `feedback-align` (DRIVE+ACQUIT) — User feedback alignment loop
@@ -89,15 +91,19 @@ The project is inspired by the **ARIS (Agent Runtime Integration Specification)*
 
 ### Stage 1: 🟢 task-gen — Generate Tasks
 
-**Role**: DRIVE | **Depends on**: eval-wiki | **Produces**: Task
+**Role**: DRIVE | **Depends on**: eval-wiki | **Produces**: Scenario, Task
 
-Reads `query_pack.md` (gap analysis, failed tasks, coverage stats) and generates new Agent evaluation tasks. Each task specifies difficulty, scenario type (single-turn, multi-turn, tool-chain, error-recovery), allowed tools, expected behavior, and cost budget.
+Uses AWM-style two-stage generation (arxiv 2602.10090):
+1. **Scenario Generation**: Reads `query_pack.md` (gap analysis, failed tasks, coverage stats) and generates diverse scenario descriptions as seeds.
+2. **Task Generation**: For each scenario, generates M concrete tasks (default M=3). Each task references its parent scenario via `scenario_id`.
+
+Each task specifies difficulty, scenario type (single-turn, multi-turn, tool-chain, error-recovery), allowed tools, expected behavior, and cost budget.
 
 ### Stage 2: 🟢 env-gen — Generate Environments
 
-**Role**: DRIVE | **Depends on**: task | **Produces**: Environment
+**Role**: DRIVE | **Depends on**: task, env-component-manager | **Produces**: Environment
 
-Reads task constraints and generates a `docker-compose.yml` configuration. Provisions containers, configures mock services, health checks, and records the environment metadata in eval-wiki.
+Reads task constraints, queries the component manager for matching components, assembles them into a `docker-compose.yml` via the component manager, fine-tunes components as needed (adjusting Dockerfiles, app code, database schemas, mock services), provisions containers, configures health checks, and records the environment metadata in eval-wiki. Uses the component reuse protocol: search → fork → fine-tune → register back.
 
 ### Stage 3: 🔴 rubric-gen — Generate Rubrics
 
@@ -125,16 +131,19 @@ Records user feedback, classifies issue types (misalignment, missing_case, rubri
 
 | Entity | Directory | Node ID Prefix | Description |
 |--------|-----------|---------------|-------------|
+| **Scenario** | `scenarios/` | `scenario:` | Evaluation scenario description (seed for task generation) |
 | **Task** | `tasks/` | `task:` | Evaluation task specification |
 | **Environment** | `environments/` | `env:` | Docker container configuration |
 | **Rubric** | `rubrics/` | `rubric:` | Scoring criteria + evaluator scripts |
 | **Run** | `runs/` | `run:` | Agent execution result |
 | **Feedback** | `feedback/` | `feedback:` | User or auto-audit feedback |
 
-### Edge Types (10 types)
+### Edge Types (12 types)
 
 | Edge Type | Direction | Purpose |
 |-----------|-----------|---------|
+| `scenario_for` | Scenario → Task | Task is derived from this scenario |
+| `derived_from_scenario` | Task → Scenario | Reverse edge of scenario_for |
 | `env_for` | Env → Task | Environment is configured for a task |
 | `rubric_for` | Rubric → Task | Rubric scores a task |
 | `tested_by` | Task → Run | Run tests a task |
@@ -176,8 +185,8 @@ bash ~/auto-eval/tools/install_eval_wiki.sh
 #   bash ~/auto-eval/tools/install_eval_wiki.sh /path/to/my-project
 
 # The script creates:
-#   - .claude/skills/<skill-name> symlinks (8 skills)
-#   - .eval/dist/tools/<tool-name> symlinks (7 tools)
+#   - .claude/skills/<skill-name> symlinks (9 skills)
+#   - .eval/dist/tools/<tool-name> symlinks (8 tools)
 #   - .eval/installed-skills.txt manifest
 ```
 
@@ -218,11 +227,12 @@ eval-wiki/
 ├── pyproject.toml                   # Python project config
 ├── .gitignore                       # Ignores eval-wiki/, __pycache__/, *.pyc
 │
-├── shared-references/               # Layer 1: Contracts (22 files)
-│   ├── acceptance-gate.md           #   Cross-model ACQUIT verification
-│   ├── assurance-contract.md        #   Draft vs Submission assurance levels
-│   ├── capture-antipatterns.md      #   Anti-pattern detection
-│   ├── debug-mode.md
+├── shared-references/               # Layer 1: Contracts (23 files)
+	│   ├── acceptance-gate.md           #   Cross-model ACQUIT verification
+	│   ├── assurance-contract.md        #   Draft vs Submission assurance levels
+	│   ├── capture-antipatterns.md      #   Anti-pattern detection
+	│   ├── component-assembly-contract.md #   Component assembly contract
+	│   ├── debug-mode.md
 │   ├── difficulty-cost-contract.md  #   Cost/difficulty mapping
 │   ├── effort-contract.md
 │   ├── eval-wiki-helper-resolution.md
@@ -243,32 +253,35 @@ eval-wiki/
 │   └── skill-governance.md
 │
 ├── src/
-│   └── tools/                       # Layer 2: Tools (7 CLI tools)
-│       ├── eval-wiki.py             #   Core knowledge base CLI
-│       ├── capture-filter.py        #   Runtime noise filter
-│       ├── evidence-check.py        #   Evidence file validator
-│       ├── iteration-log.py         #   Feedback loop convergence tracker
-│       ├── provenance.py            #   Provenance link validator
-│       ├── run-state.py             #   Pipeline state machine
-│       └── watchdog.py              #   Docker container monitor
+	│   └── tools/                       # Layer 2: Tools (8 CLI tools)
+	│       ├── eval-wiki.py             #   Core knowledge base CLI
+	│       ├── env-component-manager.py #   Tree-based component manager
+	│       ├── capture-filter.py        #   Runtime noise filter
+	│       ├── evidence-check.py        #   Evidence file validator
+	│       ├── iteration-log.py         #   Feedback loop convergence tracker
+	│       ├── provenance.py            #   Provenance link validator
+	│       ├── run-state.py             #   Pipeline state machine
+	│       └── watchdog.py              #   Docker container monitor
 │
-├── skills/                          # Layer 3: Skills (8 modules)
-│   ├── auto-eval-pipeline/
-│   │   └── SKILL.md                 #   🟢 DRIVE — End-to-end pipeline driver
-│   ├── env-gen/
-│   │   └── SKILL.md                 #   🟢 DRIVE — Generate Docker environments
-│   ├── eval-wiki/
-│   │   └── SKILL.md                 #   ⚙️ TOOL — Knowledge base helper
-│   ├── feedback-align/
-│   │   └── SKILL.md                 #   🟢🔴 DRIVE+ACQUIT — Feedback loop
-│   ├── report-gen/
-│   │   └── SKILL.md                 #   🟢 DRIVE — Generate HTML reports
-│   ├── rubric-gen/
-│   │   └── SKILL.md                 #   🔴 ACQUIT — Generate scoring rubrics
-│   ├── setup/
-│   │   └── SKILL.md                 #   🟢 DRIVE — Interactive setup wizard
-│   └── task-gen/
-│       └── SKILL.md                 #   🟢 DRIVE — Generate eval tasks
+├── skills/                          # Layer 3: Skills (9 modules)
+	│   ├── auto-eval-pipeline/
+	│   │   └── SKILL.md                 #   🟢 DRIVE — End-to-end pipeline driver
+	│   ├── env-component-manager/
+	│   │   └── SKILL.md                 #   🟢 DRIVE — Tree-based component manager
+	│   ├── env-gen/
+	│   │   └── SKILL.md                 #   🟢 DRIVE — Generate Docker environments
+	│   ├── eval-wiki/
+	│   │   └── SKILL.md                 #   ⚙️ TOOL — Knowledge base helper
+	│   ├── feedback-align/
+	│   │   └── SKILL.md                 #   🟢🔴 DRIVE+ACQUIT — Feedback loop
+	│   ├── report-gen/
+	│   │   └── SKILL.md                 #   🟢 DRIVE — Generate HTML reports
+	│   ├── rubric-gen/
+	│   │   └── SKILL.md                 #   🔴 ACQUIT — Generate scoring rubrics
+	│   ├── setup/
+	│   │   └── SKILL.md                 #   🟢 DRIVE — Interactive setup wizard
+	│   └── task-gen/
+	│       └── SKILL.md                 #   🟢 DRIVE — Generate eval tasks
 │
 ├── dist/tools/
 │   └── eval-wiki.py -> ../../src/tools/eval-wiki.py  # Symlink
@@ -317,8 +330,8 @@ The eval-wiki compounds knowledge across the eval lifecycle:
 
 | Stage | Role | Depends On | Produces | Description |
 |-------|------|-----------|----------|-------------|
-| **task-gen** | 🟢 DRIVE | eval-wiki | Task | Generates Agent eval tasks from query_pack.md context (gap analysis, failed tasks, coverage stats) |
-| **env-gen** | 🟢 DRIVE | task, eval-wiki | Environment | Generates docker-compose.yml, provisions containers, configures mock services and health checks |
+| **task-gen** | 🟢 DRIVE | eval-wiki | Scenario, Task | Generates Agent eval tasks using AWM two-stage generation: scenario generation → task generation |
+| **env-gen** | 🟢 DRIVE | task, eval-wiki, env-component-manager | Environment | Assembles components via component manager, fine-tunes as needed, provisions docker-compose environment |
 | **rubric-gen** | 🔴 ACQUIT | task, eval-wiki | Rubric + Evaluator Scripts | Generates scoring criteria (binary/scale/percentage), evaluator scripts, and LLM judge prompts |
 | **report-gen** | 🟢 DRIVE | run, eval-wiki | HTML Report | Reads all runs/rubrics/tasks, generates a single-page HTML report with stats cards and color-coded results |
 | **feedback-align** | 🟢🔴 DRIVE+ACQUIT | eval-wiki | Feedback | Records feedback, classifies issue types, applies changes (DRIVE), then verifies cross-model (ACQUIT) |
@@ -370,6 +383,7 @@ produces: [artifact]
 |-----------|-------------|----------------|
 | task-gen | ✅ Yes | Swap `skills/task-gen/SKILL.md` |
 | env-gen | ✅ Yes | Swap `skills/env-gen/SKILL.md` |
+| env-component-manager | ✅ Yes | Swap `src/tools/env-component-manager.py` |
 | rubric-gen | ✅ Yes | Swap `skills/rubric-gen/SKILL.md` |
 | report-gen | ✅ Yes | Swap `skills/report-gen/SKILL.md` |
 | feedback-align | ✅ Yes | Swap `skills/feedback-align/SKILL.md` |

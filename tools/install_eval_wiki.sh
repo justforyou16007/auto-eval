@@ -145,6 +145,7 @@ fi
 # ---------------------------------------------------------------------------
 SKILLS=(
     "auto-eval-pipeline"
+    "env-component-manager"
     "env-gen"
     "eval-wiki"
     "feedback-align"
@@ -156,6 +157,7 @@ SKILLS=(
 
 TOOLS=(
     "capture-filter.py"
+    "env-component-manager.py"
     "eval-wiki.py"
     "evidence-check.py"
     "iteration-log.py"

@@ -40,9 +40,10 @@ class TestSkillStructure(unittest.TestCase):
                             f"Broken symlink: {path}")
 
     def test_03_all_skill_md_files_exist(self):
-        """All 8 SKILL.md files exist."""
+        """All 9 SKILL.md files exist."""
         expected_skills = [
             "auto-eval-pipeline",
+            "env-component-manager",
             "env-gen",
             "eval-wiki",
             "feedback-align",

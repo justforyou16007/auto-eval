@@ -26,9 +26,11 @@ VALID_EDGE_TYPES = {
     "addresses_gap",
     "evolved_from",
     "revise",
+    "scenario_for",
+    "derived_from_scenario",
 }
 
-ENTITY_DIRS = ["tasks", "environments", "rubrics", "runs", "feedback"]
+ENTITY_DIRS = ["tasks", "environments", "rubrics", "runs", "feedback", "scenarios"]
 VALID_DIFFICULTIES = {"lite", "easy", "medium", "hard", "beast"}
 VALID_SCENARIO_TYPES = {"single-turn", "multi-turn", "tool-chain", "error-recovery"}
 VALID_STATUSES = {
@@ -366,6 +368,50 @@ def init_wiki(wiki_root: str):
     print(f"Eval wiki initialized at {wiki_root}")
 
 
+
+def render_scenario_page(name, description, scenario_type, difficulty, capabilities, env_hints):
+    """Render a scenario markdown page."""
+    fm = {
+        "type": "scenario",
+        "node_id": f"scenario:{slugify(name)}",
+        "name": name,
+        "description": description,
+        "scenario_type": scenario_type,
+        "difficulty": difficulty,
+        "capabilities": capabilities if capabilities else [],
+        "env_hints": env_hints,
+        "status": "draft",
+        "added": now_utc_iso(),
+    }
+    body_lines = [f"# {name}", "", "## Description", description, "", "## Capabilities Tested"]
+    for cap in (capabilities or []):
+        body_lines.append(f"- {cap}")
+    body_lines.extend(["", "## Environment Hints", env_hints or "_TODO: what environment components this scenario needs._"])
+    body_lines.extend(["", "## Connections", "_Edges are recorded in `graph/edges.jsonl`; summarize here for human readers._"])
+    body = "\n".join(body_lines)
+    return render_yaml_frontmatter(fm) + "\n" + body + "\n"
+
+
+def add_scenario(wiki_root, name, description, scenario_type="multi-turn", difficulty="medium",
+                 capabilities=None, env_hints="", update=False):
+    """Add a scenario to the wiki."""
+    slug = slugify(name)
+    filepath = os.path.join(wiki_root, "scenarios", f"{slug}.md")
+    if os.path.exists(filepath) and not update:
+        print(f"Scenario already ingested: {slug} — skipping.")
+        return filepath
+    caps = split_csv(capabilities) if capabilities else []
+    page = render_scenario_page(name, description, scenario_type, difficulty, caps, env_hints)
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(page)
+    rebuild_index(wiki_root)
+    rebuild_query_pack(wiki_root)
+    append_log(wiki_root, f"Scenario added: scenario:{slug}")
+    print(f"Scenario ingested: {filepath}")
+    return filepath
+
+
 def add_task(
     wiki_root: str,
     title: str,
@@ -380,6 +426,7 @@ def add_task(
     based_on: str = None,
     status: str = "draft",
     update: bool = False,
+    scenario_id: str = None,
 ):
     """Add a task to the wiki."""
     slug = slugify(title)
@@ -407,6 +454,7 @@ def add_task(
         "coverage_gaps": [f"gap:{g}" for g in split_csv(coverage_gap)] if coverage_gap else [],
         "status": status,
         "based_on": [normalize_node_id(b, "task") for b in split_csv(based_on)] if based_on else [],
+        "scenario_id": normalize_node_id(scenario_id, "scenario") if scenario_id else "",
         "added": now_utc_iso(),
     }
 
@@ -437,6 +485,12 @@ _Edges are recorded in `graph/edges.jsonl`; summarize here for human readers._
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
 
+    # Create scenario edges if scenario_id provided
+    if scenario_id:
+        sid = normalize_node_id(scenario_id, "scenario")
+        add_edge_internal(wiki_root, sid, f"task:{slug}", "scenario_for", "")
+        add_edge_internal(wiki_root, f"task:{slug}", sid, "derived_from_scenario", "")
+
     # Rebuild
     rebuild_index(wiki_root)
     rebuild_query_pack(wiki_root)
@@ -462,6 +516,7 @@ def add_env(
     health_timeout: int = None,
     status: str = "draft",
     update: bool = False,
+    scenario_id: str = None,
 ):
     """Add an environment to the wiki."""
     # Extract task slug from task-id
@@ -558,6 +613,7 @@ def add_rubric(
     status: str = "draft",
     assurance: str = "draft",
     update: bool = False,
+    scenario_id: str = None,
 ):
     """Add a rubric to the wiki."""
     task_slug = task_id
@@ -1023,7 +1079,28 @@ def rebuild_query_pack(wiki_root: str):
     else:
         sections.append("No active feedback.")
 
-    # 6. Coverage stats
+    # 6. Top scenarios
+    sections.append("")
+    scenarios_dir = os.path.join(wiki_root, "scenarios")
+    if os.path.isdir(scenarios_dir):
+        scenario_lines = []
+        for fname in sorted(os.listdir(scenarios_dir)):
+            if fname.endswith(".md"):
+                fpath = os.path.join(scenarios_dir, fname)
+                fm = load_yaml_frontmatter(fpath)
+                name = fm.get("name", fname[:-3])
+                desc = fm.get("description", "")[:100]
+                scenario_lines.append(f"- {name}: {desc}")
+                if len("\n".join(scenario_lines)) > 800:
+                    break
+        if scenario_lines:
+            sections.append("\n".join(scenario_lines)[:800])
+        else:
+            sections.append("No scenarios yet.")
+    else:
+        sections.append("No scenarios directory.")
+
+    # 7. Coverage stats
     sections.append("")
     tasks_dir = os.path.join(wiki_root, "tasks")
     runs_dir = os.path.join(wiki_root, "runs")
@@ -1205,7 +1282,17 @@ def main():
     p_task.add_argument("--coverage-gap", help="Coverage gaps (CSV)")
     p_task.add_argument("--based-on", help="Based-on task IDs (CSV)")
     p_task.add_argument("--status", default="draft", help="Task status")
+    p_task.add_argument("--scenario-id", default=None, help="Parent scenario ID")
     p_task.add_argument("--update", action="store_true", help="Update existing task")
+    p_scenario = subparsers.add_parser("add-scenario", help="Add a scenario")
+    p_scenario.add_argument("wiki_root", help="Path to wiki root")
+    p_scenario.add_argument("--name", required=True, help="Scenario name")
+    p_scenario.add_argument("--description", required=True, help="Scenario description")
+    p_scenario.add_argument("--scenario-type", default="multi-turn", help="Scenario type")
+    p_scenario.add_argument("--difficulty", default="medium", help="Difficulty level")
+    p_scenario.add_argument("--capabilities", default=None, help="Capabilities (CSV)")
+    p_scenario.add_argument("--env-hints", default="", help="Environment hints")
+    p_scenario.add_argument("--update", action="store_true", help="Update existing scenario")
 
     # add-env
     p_env = subparsers.add_parser("add-env", help="Add an environment")
@@ -1304,6 +1391,18 @@ def main():
         if args.command == "init":
             init_wiki(args.wiki_root)
 
+        elif args.command == "add-scenario":
+            add_scenario(
+                args.wiki_root,
+                args.name,
+                args.description,
+                args.scenario_type,
+                args.difficulty,
+                args.capabilities,
+                args.env_hints,
+                args.update,
+            )
+
         elif args.command == "add-task":
             add_task(
                 args.wiki_root,
@@ -1318,6 +1417,7 @@ def main():
                 coverage_gap=args.coverage_gap,
                 based_on=args.based_on,
                 status=args.status,
+                scenario_id=args.scenario_id,
                 update=args.update,
             )
 
@@ -1337,6 +1437,7 @@ def main():
                 health_check=args.health_check,
                 health_timeout=args.health_timeout,
                 status=args.status,
+                scenario_id=args.scenario_id,
                 update=args.update,
             )
 
@@ -1347,6 +1448,7 @@ def main():
                 criteria_json=args.criteria_json,
                 status=args.status,
                 assurance=args.assurance,
+                scenario_id=args.scenario_id,
                 update=args.update,
             )
 
