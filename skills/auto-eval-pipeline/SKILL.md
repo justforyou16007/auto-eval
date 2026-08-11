@@ -12,10 +12,22 @@ produces: [task, environment, rubric, run, report, feedback]
 
 ## Overview
 
-End-to-end Agent verification pipeline driver. Takes a user query or evaluation
-goal and drives the full pipeline through all stages: task generation, environment
-generation, rubric generation, (Agent execution — stub), report generation, and
-optional feedback alignment.
+End-to-end Agent verification pipeline **orchestrator**. It takes a user query
+or evaluation goal and drives the full pipeline through all stages by
+**delegating each stage to its dedicated sub-skill**:
+
+- **task-gen** — scenario + task generation
+- **env-gen** — environment generation
+- **rubric-gen** — rubric + evaluator generation
+- **report-gen** — report generation
+- **feedback-align** — feedback loop (optional)
+
+This skill is an **orchestrator only**. It does **not** reimplement the logic of
+its sub-skills inline. Each phase loads the corresponding sub-skill's `SKILL.md`,
+passes it the resolved arguments, and lets that skill produce its artifacts.
+The pipeline itself is responsible only for: pre-flight checks, argument
+parsing, delegating to each sub-skill, `run-state.py` phase tracking, state
+persistence/resume, logging, and human checkpoints.
 
 Uses `eval-wiki` as the canonical record and `run-state.py` for phase orchestration.
 
@@ -31,9 +43,11 @@ Uses `eval-wiki` as the canonical record and `run-state.py` for phase orchestrat
 | `HUMAN_CHECKPOINT` | false | Pause after each stage for user confirmation |
 | `DEBUG` | false | Enable verbose debug output |
 
-## Helper Resolution Chain
+## Helper Resolution Chains
 
-Resolve `$EVAL_WIKI_SCRIPT` via the shared chain (Variant A — hard-fail):
+### Resolve `$EVAL_WIKI_SCRIPT` (Variant A — hard-fail)
+
+The pipeline needs `eval-wiki.py` for pre-flight checks and run-state tracking.
 
 ```bash
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
@@ -55,6 +69,48 @@ if [ ! -f "$EVAL_WIKI_SCRIPT" ]; then
 fi
 ```
 
+### Resolve `$SKILLS_DIR` (for sub-skill delegation)
+
+The pipeline drives its sub-skills by loading each sub-skill's `SKILL.md` and
+executing it with the resolved arguments. Resolve the skills directory the same
+way `setup` does:
+
+```bash
+# Check for skills installed via ARIS-style install (.claude/skills/)
+SKILLS_DIR=".claude/skills"
+if [ ! -d "$SKILLS_DIR" ]; then
+    # Fall back to the auto-eval repo's skills/ directory
+    AUTOEVAL_REPO="${AUTOEVAL_REPO:-$EVAL_REPO}"
+    if [ -z "$AUTOEVAL_REPO" ]; then
+        CANDIDATE="$(pwd)"
+        while [ "$CANDIDATE" != "/" ]; do
+            [ -d "$CANDIDATE/skills" ] && { AUTOEVAL_REPO="$CANDIDATE"; break; }
+            CANDIDATE="$(dirname "$CANDIDATE")"
+        done
+    fi
+    [ -n "$AUTOEVAL_REPO" ] && SKILLS_DIR="$AUTOEVAL_REPO/skills"
+fi
+
+# Helper: verify a sub-skill exists before delegating to it.
+require_subskill() {
+    SUBSKILL="$1"
+    if [ ! -f "$SKILLS_DIR/$SUBSKILL/SKILL.md" ]; then
+        echo "ERROR: sub-skill '$SUBSKILL' not found at $SKILLS_DIR/$SUBSKILL/SKILL.md" >&2
+        echo "Run 'tools/install_eval_wiki.sh' first, or set AUTOEVAL_REPO." >&2
+        exit 1
+    fi
+}
+```
+
+> **Delegation contract.** To delegate to a sub-skill, the pipeline:
+> 1. Calls `require_subskill <name>` to confirm the skill is present.
+> 2. Loads and follows `skills/<name>/SKILL.md`, passing the resolved
+>    arguments (per that skill's `argument-hint`).
+> 3. After the sub-skill returns, verifies the expected artifact exists and
+>    records the phase in `run-state.py`.
+>
+> The pipeline never inlines the sub-skill's generation/assembly/writing logic.
+
 ## Phases
 
 ### Phase 0 — Pre-flight Check
@@ -70,7 +126,7 @@ if [ ! -f "eval-wiki/index.md" ]; then
     exit 1
 fi
 
-# Resolve $EVAL_WIKI_SCRIPT via shared chain above
+# Resolve $EVAL_WIKI_SCRIPT and $SKILLS_DIR via the chains above
 
 # Load existing state for resume detection
 if [ -f "$STATE_FILE" ]; then
@@ -91,10 +147,12 @@ if [ -f "EVAL_CONFIG.md" ]; then
 fi
 ```
 
-### Phase 1 — Task Generation (task-gen)
+### Phase 1 — Task Generation (delegate to task-gen)
 
-Resolve difficulty/cost from argument overrides or EVAL_CONFIG.md defaults, then
-generate tasks for unaddressed gaps.
+Resolve difficulty/cost from argument overrides or `EVAL_CONFIG.md` defaults,
+then **delegate task generation to the `task-gen` skill**. The pipeline does not
+generate tasks itself; it hands off to `task-gen` (which performs AWM-style
+scenario generation → task generation) and only tracks the result.
 
 ```bash
 DIFFICULTY="${ARG_DIFFICULTY:-$(grep -i 'default difficulty' EVAL_CONFIG.md 2>/dev/null | head -1 | sed 's/.*: *//' | sed 's/ *$//')}"
@@ -110,34 +168,24 @@ echo "- Difficulty: $DIFFICULTY" >> "$LOG_FILE"
 echo "- Cost: $COST" >> "$LOG_FILE"
 echo "- Count: $COUNT" >> "$LOG_FILE"
 
-# Generate tasks (stub — actual task-gen logic would read query_pack.md)
-# Each task MUST carry body content (goal/input/expected/preconditions/
-# constraints) so it is an effective spec, not a TODO stub.
-for i in $(seq 1 "$COUNT"); do
-    TITLE="Evaluation Task $i - $(date +%Y%m%d)"
-    python3 "$EVAL_WIKI_SCRIPT" add-task eval-wiki/ \
-        --title "$TITLE" \
-        --difficulty "$DIFFICULTY" \
-        --scenario-type "single-turn" \
-        --max-turns 1 \
-        --allowed-tools "search" \
-        --expected-behavior "Agent performs the task correctly" \
-        --goal "Verify the Agent can complete evaluation task $i within the turn budget" \
-        --input-spec "A natural-language evaluation prompt for task $i" \
-        --preconditions "eval-wiki is initialized; agent harness is reachable" \
-        --constraints "Agent must not exceed the turn budget or call disallowed tools" \
-        --cost "$COST"
-done
-
-# Rebuild query pack
-python3 "$EVAL_WIKI_SCRIPT" rebuild-query-pack eval-wiki/
+# --- Delegate to the task-gen sub-skill ---
+require_subskill task-gen
+# Invoke task-gen with the resolved difficulty/cost/count, following
+# skills/task-gen/SKILL.md (argument-hint: [difficulty] [cost] [count]).
+# task-gen performs scenario generation → task generation and writes
+# scenarios/tasks to eval-wiki and rebuilds the query pack.
+echo "Delegating task generation to the task-gen skill..."
+Read "$SKILLS_DIR/task-gen/SKILL.md"
+# Pass arguments to task-gen: "$DIFFICULTY" "$COST" "$COUNT"
 
 # Update run-state
 RUN_ID="run-$(date -u +'%Y%m%dT%H%M%SZ')"
 python3 src/tools/run-state.py init-run "$RUN_ID"
 python3 src/tools/run-state.py set-status "$RUN_ID" task-gen done
 
-echo "- Tasks generated: $COUNT" >> "$LOG_FILE"
+# Verify task-gen produced tasks (the sub-skill owns the generation logic)
+TASK_COUNT=$(ls eval-wiki/tasks/*.md 2>/dev/null | wc -l)
+echo "- Tasks generated: $TASK_COUNT" >> "$LOG_FILE"
 echo "- Run ID: $RUN_ID" >> "$LOG_FILE"
 
 # Save state
@@ -154,51 +202,36 @@ if [ "$HUMAN_CHECKPOINT" = "true" ]; then
 fi
 ```
 
-### Phase 2 — Environment Generation (env-gen)
+### Phase 2 — Environment Generation (delegate to env-gen)
 
-Generate Docker environments for each finalized task.
+Generate Docker environments for each finalized task by **delegating to the
+`env-gen` skill**. The pipeline does not assemble `docker-compose.yml` itself;
+`env-gen` performs component search → assemble → fine-tune → provision and
+records the environment in eval-wiki.
 
 ```bash
 echo "## Phase 2: Environment Generation" >> "$LOG_FILE"
 
-# List tasks from eval-wiki
+# List tasks from eval-wiki (produced by task-gen in Phase 1)
 TASKS=$(python3 "$EVAL_WIKI_SCRIPT" query eval-wiki/ 2>/dev/null | grep "^task:" | sed 's/^task://')
 
+# --- Delegate to the env-gen sub-skill, once per task ---
+require_subskill env-gen
+# Invoke env-gen for each task, following skills/env-gen/SKILL.md
+# (argument-hint: [task-id] [dry-run]). env-gen queries the component
+# manager, assembles/fine-tunes components, provisions containers, and
+# writes the environment record to eval-wiki.
 for TASK_ID in $TASKS; do
-    python3 "$EVAL_WIKI_SCRIPT" add-env eval-wiki/ \
-        --task-id "$TASK_ID" \
-        --image "${DOCKER_IMAGE:-python:3.11}" \
-        --network "bridge" \
-        --memory "${MEMORY:-512m}" \
-        --cpus "${CPU:-1}" \
-        --agent-endpoint "http://agent:8080" \
-        --health-check "curl -f http://localhost:8080/health"
+    echo "Delegating environment generation to the env-gen skill for $TASK_ID..."
+    Read "$SKILLS_DIR/env-gen/SKILL.md"
+    # Pass arguments to env-gen: "$TASK_ID"
 done
-
-# Generate docker-compose.yml configuration (stub)
-cat > docker-compose.yml << 'COMPOSEEOF'
-version: '3.8'
-services:
-  agent:
-    image: agent-under-test:latest
-    networks:
-      - eval-net
-    mem_limit: 512m
-    cpus: 1
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-networks:
-  eval-net:
-    driver: bridge
-COMPOSEEOF
 
 # Update run-state
 python3 src/tools/run-state.py set-status "$RUN_ID" env-gen done
 
-echo "- Environments generated for tasks: $TASKS" >> "$LOG_FILE"
+ENV_COUNT=$(ls eval-wiki/environments/*.md 2>/dev/null | wc -l)
+echo "- Environments generated: $ENV_COUNT (for tasks: $TASKS)" >> "$LOG_FILE"
 
 # Save state
 python3 -c "
@@ -215,9 +248,12 @@ if [ "$HUMAN_CHECKPOINT" = "true" ]; then
 fi
 ```
 
-### Phase 3 — Rubric Generation (rubric-gen)
+### Phase 3 — Rubric Generation (delegate to rubric-gen)
 
-Generate rubric criteria and evaluator scripts for each task.
+Generate rubric criteria and evaluator scripts for each task by **delegating to
+the `rubric-gen` skill**. The pipeline does not build criteria JSON or evaluator
+scripts itself; `rubric-gen` generates scenario-type-based criteria, evaluator
+script skeletons, writes the rubric to eval-wiki, and verifies the scripts.
 
 ```bash
 echo "## Phase 3: Rubric Generation" >> "$LOG_FILE"
@@ -226,78 +262,24 @@ mkdir -p evaluators
 
 TASKS=$(python3 "$EVAL_WIKI_SCRIPT" query eval-wiki/ 2>/dev/null | grep "^task:" | sed 's/^task://')
 
+# --- Delegate to the rubric-gen sub-skill, once per task ---
+require_subskill rubric-gen
+# Invoke rubric-gen for each task, following skills/rubric-gen/SKILL.md
+# (argument-hint: [task-id] [assurance: draft|submission]). rubric-gen
+# generates criteria, evaluator scripts, writes the rubric to eval-wiki,
+# and verifies the scripts. It is an ACQUIT skill — cross-model per
+# acceptance-gate.md.
 for TASK_ID in $TASKS; do
-    # Read task's expected_behavior and scenario_type from eval-wiki
-    TASK_FILE="eval-wiki/tasks/${TASK_ID}.md"
-    EXPECTED_BEHAVIOR=""
-    SCENARIO_TYPE=""
-    if [ -f "$TASK_FILE" ]; then
-        EXPECTED_BEHAVIOR=$(grep 'expected_behavior' "$TASK_FILE" | sed 's/.*: *"//;s/"//')
-        SCENARIO_TYPE=$(grep 'scenario_type' "$TASK_FILE" | sed 's/.*: *"//;s/"//')
-    fi
-
-    # Generate criteria JSON
-    python3 -c "
-import json
-criteria = {
-    'criteria': [
-        {
-            'id': 'C1',
-            'name': 'Correctness',
-            'description': 'Agent produces the correct output',
-            'scoring': 'binary',
-            'weight': 1.0,
-            'evaluator': 'script',
-            'script_path': 'evaluators/${TASK_ID}_correctness.py'
-        },
-        {
-            'id': 'C2',
-            'name': 'Tool Usage',
-            'description': 'Agent uses tools correctly and efficiently',
-            'scoring': 'scale',
-            'weight': 0.5,
-            'evaluator': 'llm_judge',
-            'script_path': ''
-        }
-    ]
-}
-with open('evaluators/criteria.json', 'w') as f:
-    json.dump(criteria, f, indent=2)
-"
-
-    # Create evaluator script skeleton
-    cat > "evaluators/${TASK_ID}_correctness.py" << 'EVALEOF'
-#!/usr/bin/env python3
-"""Evaluator script for C1: Correctness."""
-import sys
-
-def evaluate(agent_output: str, expected: str) -> dict:
-    """Evaluate correctness of agent output."""
-    passed = agent_output.strip() == expected.strip()
-    return {
-        "criterion_id": "C1",
-        "passed": passed,
-        "score": 1.0 if passed else 0.0,
-        "evidence": f"Expected: {expected}, Got: {agent_output}"
-    }
-
-if __name__ == "__main__":
-    # Stub: read from stdin or args
-    result = evaluate("", "")
-    print(json.dumps(result))
-EVALEOF
-    chmod +x "evaluators/${TASK_ID}_correctness.py"
-
-    # Add rubric to eval-wiki
-    python3 "$EVAL_WIKI_SCRIPT" add-rubric eval-wiki/ \
-        --task-id "$TASK_ID" \
-        --criteria-json evaluators/criteria.json
+    echo "Delegating rubric generation to the rubric-gen skill for $TASK_ID..."
+    Read "$SKILLS_DIR/rubric-gen/SKILL.md"
+    # Pass arguments to rubric-gen: "$TASK_ID"
 done
 
 # Update run-state
 python3 src/tools/run-state.py set-status "$RUN_ID" rubric-gen done
 
-echo "- Rubrics generated for tasks: $TASKS" >> "$LOG_FILE"
+RUBRIC_COUNT=$(ls eval-wiki/rubrics/*.md 2>/dev/null | wc -l)
+echo "- Rubrics generated: $RUBRIC_COUNT (for tasks: $TASKS)" >> "$LOG_FILE"
 
 # Save state
 python3 -c "
@@ -314,82 +296,34 @@ if [ "$HUMAN_CHECKPOINT" = "true" ]; then
 fi
 ```
 
-### Phase 4 — Report Generation (report-gen)
+### Phase 4 — Report Generation (delegate to report-gen)
 
 Read all tasks, runs, rubrics, and feedback from eval-wiki and generate a
-single HTML report with overview stats and per-task sections.
+single HTML report by **delegating to the `report-gen` skill**. The pipeline
+does not author the HTML itself; `report-gen` collects eval-wiki data and
+produces the versioned report.
 
 ```bash
 echo "## Phase 4: Report Generation" >> "$LOG_FILE"
 
 mkdir -p reports
 
-# Gather data from eval-wiki
-TASKS=$(python3 "$EVAL_WIKI_SCRIPT" query eval-wiki/ 2>/dev/null)
-RUNS=$(python3 "$EVAL_WIKI_SCRIPT" query eval-wiki/ 2>/dev/null || true)
-RUBRICS=$(python3 "$EVAL_WIKI_SCRIPT" query eval-wiki/ 2>/dev/null || true)
-FEEDBACK=$(python3 "$EVAL_WIKI_SCRIPT" query eval-wiki/ 2>/dev/null || true)
-
-# Generate HTML report
-TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
-cat > "$REPORT_FILE" << 'HTMLEOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Pipeline Evaluation Report</title>
-    <style>
-        body { font-family: -apple-system, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; }
-        h1 { color: #333; border-bottom: 2px solid #eee; padding-bottom: 0.5em; }
-        h2 { color: #555; margin-top: 2em; }
-        table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background: #f5f5f5; }
-        .pass { color: #2e7d32; }
-        .fail { color: #c62828; }
-        .summary { background: #f9f9f9; padding: 1em; border-radius: 4px; }
-    </style>
-</head>
-<body>
-    <h1>Pipeline Evaluation Report</h1>
-    <div class="summary">
-        <p><strong>Generated:</strong> TIMESTAMP_PLACEHOLDER</p>
-        <p><strong>Run ID:</strong> RUN_ID_PLACEHOLDER</p>
-    </div>
-    <h2>Overview</h2>
-    <table>
-        <tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Tasks Generated</td><td>TASK_COUNT_PLACEHOLDER</td></tr>
-        <tr><td>Environments Created</td><td>ENV_COUNT_PLACEHOLDER</td></tr>
-        <tr><td>Rubrics Created</td><td>RUBRIC_COUNT_PLACEHOLDER</td></tr>
-        <tr><td>Runs Completed</td><td>RUN_COUNT_PLACEHOLDER</td></tr>
-    </table>
-    <h2>Tasks</h2>
-    <p>See eval-wiki/tasks/ for full task specifications.</p>
-    <p><em>Report generated by auto-eval-pipeline skill.</em></p>
-</body>
-</html>
-HTMLEOF
-
-# Replace placeholders
-sed -i "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/g" "$REPORT_FILE"
-sed -i "s/RUN_ID_PLACEHOLDER/$RUN_ID/g" "$REPORT_FILE"
-TASK_COUNT=$(echo "$TASKS" | grep -c "^task:" 2>/dev/null || echo "0")
-sed -i "s/TASK_COUNT_PLACEHOLDER/$TASK_COUNT/g" "$REPORT_FILE"
-sed -i "s/ENV_COUNT_PLACEHOLDER/0/g" "$REPORT_FILE"
-sed -i "s/RUBRIC_COUNT_PLACEHOLDER/0/g" "$REPORT_FILE"
-sed -i "s/RUN_COUNT_PLACEHOLDER/0/g" "$REPORT_FILE"
-
-# Write versioned copy (per output-versioning.md)
-cp "$REPORT_FILE" "reports/pipeline-report-${TIMESTAMP}.html"
-cp "$REPORT_FILE" "reports/pipeline-report-latest.html"
+# --- Delegate to the report-gen sub-skill ---
+require_subskill report-gen
+# Invoke report-gen, following skills/report-gen/SKILL.md
+# (argument-hint: [wiki-root] [output-path]). report-gen collects all
+# runs/rubrics/tasks from eval-wiki and writes the versioned HTML report
+# (report-<timestamp>.html + report-latest.html).
+echo "Delegating report generation to the report-gen skill..."
+Read "$SKILLS_DIR/report-gen/SKILL.md"
+# Pass arguments to report-gen: "eval-wiki" "reports"
 
 # Update run-state
 python3 src/tools/run-state.py set-status "$RUN_ID" report-gen done
 
+# The report-gen skill owns the report path/structure; pin the expected path
+# for state and the summary, but do not author the HTML here.
 echo "- Report generated: $REPORT_FILE" >> "$LOG_FILE"
-echo "- Versioned: reports/pipeline-report-${TIMESTAMP}.html" >> "$LOG_FILE"
-echo "- Latest: reports/pipeline-report-latest.html" >> "$LOG_FILE"
 
 # Save state
 python3 -c "
@@ -397,7 +331,6 @@ import json
 state = json.load(open('$STATE_FILE'))
 state['last_completed_phase'] = 4
 state['report_path'] = '$REPORT_FILE'
-state['report_timestamp'] = '$TIMESTAMP'
 with open('$STATE_FILE', 'w') as f:
     json.dump(state, f)
 "
@@ -408,9 +341,12 @@ if [ "$HUMAN_CHECKPOINT" = "true" ]; then
 fi
 ```
 
-### Phase 5 — Summary & Feedback Loop
+### Phase 5 — Summary & Feedback Loop (delegate to feedback-align)
 
-Print pipeline summary and optionally collect feedback.
+Print the pipeline summary and, when feedback is requested, **delegate to the
+`feedback-align` skill**. The pipeline does not record or apply feedback itself;
+`feedback-align` records feedback, proposes/applies changes, and verifies them
+cross-model.
 
 ```bash
 echo "## Phase 5: Summary" >> "$LOG_FILE"
@@ -442,7 +378,26 @@ echo "- Environments: $ENV_COUNT" >> "$LOG_FILE"
 echo "- Rubrics: $RUBRIC_COUNT" >> "$LOG_FILE"
 echo "- Runs: $RUN_COUNT" >> "$LOG_FILE"
 
-# Mark pipeline as complete
+# --- Optional: delegate feedback to the feedback-align sub-skill ---
+require_subskill feedback-align
+
+# Optional feedback collection
+if [ "$HUMAN_CHECKPOINT" = "true" ]; then
+    AskUserQuestion "Would you like to provide feedback on this run? (Y/n)" "n"
+    if [ "$ANSWER" = "Y" ] || [ "$ANSWER" = "y" ]; then
+        AskUserQuestion "Describe your feedback:" ""
+        # Invoke feedback-align, following skills/feedback-align/SKILL.md
+        # (argument-hint: [target-type] [target-id] [action]). feedback-align
+        # records the feedback, analyzes/applies the change, and verifies it
+        # cross-model.
+        echo "Delegating feedback to the feedback-align skill..."
+        Read "$SKILLS_DIR/feedback-align/SKILL.md"
+        # Pass arguments to feedback-align: "run" "$RUN_ID" "revise_report"
+        echo "- Feedback recorded (via feedback-align)" >> "$LOG_FILE"
+    fi
+fi
+
+# Mark pipeline as complete (after the feedback-align sub-skill has run)
 python3 src/tools/run-state.py set-status "$RUN_ID" feedback-align done
 
 # Save final state
@@ -455,22 +410,6 @@ with open('$STATE_FILE', 'w') as f:
     json.dump(state, f)
 "
 
-# Optional feedback collection
-if [ "$HUMAN_CHECKPOINT" = "true" ]; then
-    AskUserQuestion "Would you like to provide feedback on this run? (Y/n)" "n"
-    if [ "$ANSWER" = "Y" ] || [ "$ANSWER" = "y" ]; then
-        AskUserQuestion "Describe your feedback:" ""
-        python3 "$EVAL_WIKI_SCRIPT" add-feedback eval-wiki/ \
-            --target-type "run" \
-            --target-id "$RUN_ID" \
-            --from "user" \
-            --issue-type "misalignment" \
-            --description "$ANSWER" \
-            --action "revise_report"
-        echo "- Feedback recorded" >> "$LOG_FILE"
-    fi
-fi
-
 echo ""
 echo "Next steps:"
 echo "  - Review the report at $REPORT_FILE"
@@ -481,12 +420,17 @@ echo "=========================================="
 
 ## Key Design Patterns
 
+- **Delegates each stage to its sub-skill** (`task-gen`, `env-gen`,
+  `rubric-gen`, `report-gen`, `feedback-align`) — the pipeline never inlines a
+  sub-skill's generation/assembly/writing logic. Each sub-skill owns its
+  artifacts; the pipeline only orchestrates, tracks, and verifies.
 - **Uses `run-state.py`** for phase orchestration (`init-run`, `set-status` per phase).
 - **Accepts `— difficulty:` and `— cost:` parameters**, passed through to task-gen.
 - **Resumable** via `.eval/pipeline/state.json` — detects and resumes from last incomplete phase.
 - **Each phase logs** to `LOG_FILE` (`.eval/pipeline/log.md`).
 - **`HUMAN_CHECKPOINT` flag** for interactive mode with user confirmation at each stage.
 - **`$EVAL_WIKI_SCRIPT` resolution chain** (Variant A — hard-fail).
+- **`$SKILLS_DIR` resolution chain** for sub-skill discovery (same as `setup`).
 - **References `shared-references/`** contracts for output versioning, effort/cost, etc.
 - **All phases are DRIVE role** — the pipeline orchestrator drives execution directly.
-- **Output versioning**: Report files are written with timestamped copies plus a `-latest` symlink, per `shared-references/output-versioning.md`.
+- **Output versioning**: Report files are written with timestamped copies plus a `-latest` symlink, per `shared-references/output-versioning.md` (handled by report-gen).
