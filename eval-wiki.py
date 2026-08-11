@@ -580,6 +580,7 @@ def add_env(
             "command": health_check if health_check else "",
             "timeout_seconds": health_timeout if health_timeout is not None else 30,
         },
+        "scenario_id": normalize_node_id(scenario_id, "scenario") if scenario_id else "",
         "status": status,
         "added": now_utc_iso(),
     }
@@ -597,6 +598,12 @@ def add_env(
 
     # Auto-add edge
     add_edge_internal(wiki_root, f"env:{env_slug}", f"task:{task_slug}", "depends_on")
+
+    # Create scenario edges if scenario_id provided
+    if scenario_id:
+        sid = normalize_node_id(scenario_id, "scenario")
+        add_edge_internal(wiki_root, sid, f"env:{env_slug}", "scenario_for", "")
+        add_edge_internal(wiki_root, f"env:{env_slug}", sid, "derived_from_scenario", "")
 
     rebuild_index(wiki_root)
     rebuild_query_pack(wiki_root)
@@ -637,6 +644,7 @@ def add_rubric(
         "criteria": criteria,
         "status": status,
         "assurance": assurance,
+        "scenario_id": normalize_node_id(scenario_id, "scenario") if scenario_id else "",
         "added": now_utc_iso(),
     }
 
@@ -669,6 +677,12 @@ def add_rubric(
     content = render_yaml_frontmatter(fm) + "\n" + body
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
+
+    # Create scenario edges if scenario_id provided
+    if scenario_id:
+        sid = normalize_node_id(scenario_id, "scenario")
+        add_edge_internal(wiki_root, sid, f"rubric:{rubric_slug}", "scenario_for", "")
+        add_edge_internal(wiki_root, f"rubric:{rubric_slug}", sid, "derived_from_scenario", "")
 
     rebuild_index(wiki_root)
     rebuild_query_pack(wiki_root)
@@ -1310,6 +1324,7 @@ def main():
     p_env.add_argument("--health-check", help="Health check command")
     p_env.add_argument("--health-timeout", type=int, help="Health check timeout")
     p_env.add_argument("--status", default="draft", help="Environment status")
+    p_env.add_argument("--scenario-id", default=None, help="Parent scenario ID")
     p_env.add_argument("--update", action="store_true", help="Update existing environment")
 
     # add-rubric
@@ -1319,6 +1334,7 @@ def main():
     p_rubric.add_argument("--criteria-json", required=True, help="Path to criteria JSON file")
     p_rubric.add_argument("--status", default="draft", help="Rubric status")
     p_rubric.add_argument("--assurance", default="draft", help="Assurance level")
+    p_rubric.add_argument("--scenario-id", default=None, help="Parent scenario ID")
     p_rubric.add_argument("--update", action="store_true", help="Update existing rubric")
 
     # add-run
