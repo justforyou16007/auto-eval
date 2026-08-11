@@ -1,11 +1,12 @@
 ---
 name: feedback-align
-description: 'Record and apply user feedback to align eval tasks, rubrics, environments, and reports. DRIVE+ACQUIT role. Use when user says "反馈", "feedback", "调整", or wants to revise eval artifacts based on user input.'
+description: 'Record and apply user feedback to align eval tasks, rubrics, environments, and reports. DRIVE role — records, analyzes, and applies changes; verification is delegated to the feedback-audit ACQUIT skill. Use when user says "反馈", "feedback", "调整", or wants to revise eval artifacts based on user input.'
 argument-hint: "[target-type] [target-id] [action]"
 allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob
-role: DRIVE_ACQUIT
+role: DRIVE
 depends-on: [eval-wiki]
 produces: [feedback]
+audited-by: [feedback-audit]
 ---
 
 # feedback-align Skill
@@ -13,10 +14,16 @@ produces: [feedback]
 ## Overview
 
 Records feedback, classifies the issue type, generates a proposed change,
-applies the change, and verifies it. This skill has both DRIVE and ACQUIT
-aspects:
-- **DRIVE part**: Feedback analysis and change proposal (can be same model)
-- **ACQUIT part**: Change verification (must be cross-model per acceptance-gate.md)
+and applies the change. After the role redesign (issue #5), this is a
+**DRIVE** worker skill — it performs only the constructive parts
+(record → analyze → apply). The ACQUIT responsibility for *verifying the
+change resolved the issue* is delegated to the dedicated **`feedback-audit`**
+skill (cross-model), not performed by feedback-align itself.
+
+> **Why the change.** Previously feedback-align was `DRIVE_ACQUIT` and
+> verified its own changes. That violated the DRIVE/ACQUIT separation — the
+> same skill both applied and approved a change. Now feedback-align is a
+> pure DRIVE worker; `feedback-audit` (a different model family) verifies.
 
 ## Helper Resolution
 
@@ -143,47 +150,33 @@ if [ -f "$EVAL_WIKI_SCRIPT" ]; then
 fi
 ```
 
-### Phase 4: Verify Change (ACQUIT)
+### Phase 4: Delegate Verification (to feedback-audit)
 
-Re-run the affected task to confirm the change resolved the issue.
-**Cross-model verification**: The verifying agent must be a different model
-family (per acceptance-gate.md).
+The change is applied, but feedback-align does NOT verify it itself. Per
+the role redesign, verification is delegated to the **`feedback-audit`**
+ACQUIT skill, which must be a different model family per
+`acceptance-gate.md`. feedback-align marks the feedback status as
+`applied`; `feedback-audit` will advance it to `verified` only after
+re-running the affected task and confirming the issue is resolved.
 
 ```bash
-# Run the task with the updated configuration
-# The verifying agent must be from a different model family
-
-if [ "$VERIFIED" = "true" ]; then
-    python3 "$EVAL_WIKI_SCRIPT" add-feedback eval-wiki/ \
-      --target-type "$TARGET_TYPE" \
-      --target-id "$TARGET_ID" \
-      --from user \
-      --issue-type "$ISSUE_TYPE" \
-      --description "$DESCRIPTION" \
-      --action "$ACTION" \
-      --status "verified" \
-      --field "$FIELD" \
-      --from-value "$FROM_VALUE" \
-      --to-value "$TO_VALUE"
-else
-    python3 "$EVAL_WIKI_SCRIPT" add-feedback eval-wiki/ \
-      --target-type "$TARGET_TYPE" \
-      --target-id "$TARGET_ID" \
-      --from user \
-      --issue-type "$ISSUE_TYPE" \
-      --description "$DESCRIPTION" \
-      --action "$ACTION" \
-      --status "open" \
-      --field "$FIELD" \
-      --from-value "$FROM_VALUE" \
-      --to-value "$TO_VALUE"
-fi
+# feedback-align's job ends here — it has applied the change.
+# The pipeline (or operator) now invokes feedback-audit:
+#   require_subskill feedback-audit
+#   Read "$SKILLS_DIR/feedback-audit/SKILL.md"
+# feedback-audit re-runs the affected task, cross-model, and records
+# the verdict (verified/open) in the feedback record.
+echo "Change applied for $TARGET_ID. Delegating verification to feedback-audit."
+echo "(feedback-audit will set status 'verified' if the issue is resolved.)"
 ```
 
 ### Phase 5: Rebuild query_pack
 
+Rebuild the query pack after the change has been applied (and after
+`feedback-audit` has verified it, when run in the full pipeline).
+
 ```bash
-if [ -f "$EVAL_WIKI_SCRIPT" ] && [ "$VERIFIED" = "true" ]; then
+if [ -f "$EVAL_WIKI_SCRIPT" ]; then
     python3 "$EVAL_WIKI_SCRIPT" rebuild-query-pack eval-wiki/
 fi
 ```

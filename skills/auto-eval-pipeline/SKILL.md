@@ -4,7 +4,7 @@ description: 'End-to-end Agent verification pipeline driver. Takes a user query 
 argument-hint: "[goal] [— difficulty: lite|easy|medium|hard|beast] [— cost: 0.1-unlimited] [— count: N]"
 allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, AskUserQuestion
 role: DRIVE
-depends-on: [eval-wiki, task-gen, env-gen, rubric-gen, report-gen, feedback-align, run-state]
+depends-on: [eval-wiki, task-gen, env-gen, rubric-gen, report-gen, feedback-align, task-audit, env-audit, rubric-audit, report-audit, feedback-audit, run-state]
 produces: [task, environment, rubric, run, report, feedback]
 ---
 
@@ -188,6 +188,17 @@ TASK_COUNT=$(ls eval-wiki/tasks/*.md 2>/dev/null | wc -l)
 echo "- Tasks generated: $TASK_COUNT" >> "$LOG_FILE"
 echo "- Run ID: $RUN_ID" >> "$LOG_FILE"
 
+# --- Delegate to the task-audit ACQUIT skill (issue #5) ---
+require_subskill task-audit
+# Invoke task-audit (cross-model), following skills/task-audit/SKILL.md.
+# task-audit reads task-gen's output and checks: (a) completeness — no
+# _TODO stubs, correct scenario→task linkage; (b) usability — files real,
+# frontmatter valid, query_pack rebuilt; (c) alignment — tasks match
+# real-world scenarios. A failed audit gates the pipeline.
+echo "Delegating task audit to the task-audit skill (cross-model)..."
+Read "$SKILLS_DIR/task-audit/SKILL.md"
+echo "- task-audit: verdict recorded" >> "$LOG_FILE"
+
 # Save state
 python3 -c "
 import json
@@ -232,6 +243,19 @@ python3 src/tools/run-state.py set-status "$RUN_ID" env-gen done
 
 ENV_COUNT=$(ls eval-wiki/environments/*.md 2>/dev/null | wc -l)
 echo "- Environments generated: $ENV_COUNT (for tasks: $TASKS)" >> "$LOG_FILE"
+
+# --- Delegate to the env-audit ACQUIT skill (issue #5) ---
+require_subskill env-audit
+# Invoke env-audit (cross-model) for each task, following
+# skills/env-audit/SKILL.md. env-audit reads env-gen's output and checks:
+# (a) completeness — compose/manifest non-empty, status set; (b) usability —
+# actually runs `docker compose config` + build + health check; (c) constraint
+# match — env matches task scenario_type/tools/cost.
+for TASK_ID in $TASKS; do
+    echo "Delegating environment audit to the env-audit skill for $TASK_ID (cross-model)..."
+    Read "$SKILLS_DIR/env-audit/SKILL.md"
+done
+echo "- env-audit: verdict recorded" >> "$LOG_FILE"
 
 # Save state
 python3 -c "
@@ -281,6 +305,20 @@ python3 src/tools/run-state.py set-status "$RUN_ID" rubric-gen done
 RUBRIC_COUNT=$(ls eval-wiki/rubrics/*.md 2>/dev/null | wc -l)
 echo "- Rubrics generated: $RUBRIC_COUNT (for tasks: $TASKS)" >> "$LOG_FILE"
 
+# --- Delegate to the rubric-audit ACQUIT skill (issue #5) ---
+require_subskill rubric-audit
+# Invoke rubric-audit (cross-model) for each task, following
+# skills/rubric-audit/SKILL.md. rubric-audit reads rubric-gen's output and
+# checks: (a) completeness — 3-5 criteria, all fields present; (b) usability
+# — every evaluator actually runs (--help + sample output); (c) coverage —
+# criteria cover the task scenario_type. This replaces the old design where
+# rubric-gen was itself ACQUIT.
+for TASK_ID in $TASKS; do
+    echo "Delegating rubric audit to the rubric-audit skill for $TASK_ID (cross-model)..."
+    Read "$SKILLS_DIR/rubric-audit/SKILL.md"
+done
+echo "- rubric-audit: verdict recorded" >> "$LOG_FILE"
+
 # Save state
 python3 -c "
 import json
@@ -324,6 +362,17 @@ python3 src/tools/run-state.py set-status "$RUN_ID" report-gen done
 # The report-gen skill owns the report path/structure; pin the expected path
 # for state and the summary, but do not author the HTML here.
 echo "- Report generated: $REPORT_FILE" >> "$LOG_FILE"
+
+# --- Delegate to the report-audit ACQUIT skill (issue #5) ---
+require_subskill report-audit
+# Invoke report-audit (cross-model), following skills/report-audit/SKILL.md.
+# report-audit reads report-gen's output and checks: (a) completeness —
+# report non-trivial, versioned+latest present; (b) usability — actually
+# parses HTML and cross-checks stat cards against eval-wiki counts;
+# (c) provenance — evidence links resolve.
+echo "Delegating report audit to the report-audit skill (cross-model)..."
+Read "$SKILLS_DIR/report-audit/SKILL.md"
+echo "- report-audit: verdict recorded" >> "$LOG_FILE"
 
 # Save state
 python3 -c "
@@ -388,12 +437,26 @@ if [ "$HUMAN_CHECKPOINT" = "true" ]; then
         AskUserQuestion "Describe your feedback:" ""
         # Invoke feedback-align, following skills/feedback-align/SKILL.md
         # (argument-hint: [target-type] [target-id] [action]). feedback-align
-        # records the feedback, analyzes/applies the change, and verifies it
-        # cross-model.
+        # records the feedback, analyzes/applies the change (DRIVE only);
+        # verification is delegated to feedback-audit below.
         echo "Delegating feedback to the feedback-align skill..."
         Read "$SKILLS_DIR/feedback-align/SKILL.md"
         # Pass arguments to feedback-align: "run" "$RUN_ID" "revise_report"
         echo "- Feedback recorded (via feedback-align)" >> "$LOG_FILE"
+
+        # --- Delegate to the feedback-audit ACQUIT skill (issue #5) ---
+        require_subskill feedback-audit
+        # Invoke feedback-audit (cross-model), following
+        # skills/feedback-audit/SKILL.md. feedback-audit reads
+        # feedback-align's output and checks: (a) completeness — status
+        # advanced to applied, from/to values present; (b) usability —
+        # actually re-runs the affected task and confirms the issue is
+        # resolved; (c) status accuracy — recorded status matches reality.
+        # This replaces the old design where feedback-align (DRIVE_ACQUIT)
+        # verified its own changes.
+        echo "Delegating feedback audit to the feedback-audit skill (cross-model)..."
+        Read "$SKILLS_DIR/feedback-audit/SKILL.md"
+        echo "- feedback-audit: verdict recorded" >> "$LOG_FILE"
     fi
 fi
 

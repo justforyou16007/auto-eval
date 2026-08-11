@@ -1,22 +1,28 @@
 ---
 name: rubric-gen
-description: 'Generate scoring rubrics for eval tasks. ACQUIT role — must use cross-model. Use when user says "生成rubric", "generate rubric", "评分标准", or wants to create scoring criteria.'
+description: 'Generate scoring rubrics for eval tasks. DRIVE role — generates criteria + evaluator scripts; verification is delegated to the rubric-audit ACQUIT skill. Use when user says "生成rubric", "generate rubric", "评分标准", or wants to create scoring criteria.'
 argument-hint: "[task-id] [assurance: draft|submission]"
 allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob
-role: ACQUIT
+role: DRIVE
 depends-on: [eval-wiki, task]
 produces: [rubric]
-cross-model-required: true
+audited-by: [rubric-audit]
 ---
 
 # rubric-gen Skill
 
 ## Overview
 
-Generates rubric criteria and evaluator scripts based on a task. This is an
-**ACQUIT** role skill — rubric generation defines "what is correct", which
-is a quality verdict on the task. Per the acceptance gate, this must be
-cross-model.
+Generates rubric criteria and evaluator scripts based on a task. After the
+role redesign (issue #5), this is a **DRIVE** worker skill — it
+*constructs* rubrics and evaluator scripts. The ACQUIT responsibility for
+*verifying* rubric correctness is delegated to the dedicated **`rubric-audit`**
+skill (cross-model), not performed by rubric-gen itself.
+
+> **Why the change.** Previously rubric-gen was tagged `ACQUIT` and expected
+> to cross-model-verify its own output. That conflated the worker with its
+> auditor and violated the DRIVE/ACQUIT separation. Now rubric-gen is a pure
+> DRIVE worker; `rubric-audit` (a different model family) audits it.
 
 ## Helper Resolution
 
@@ -70,10 +76,14 @@ Each criterion includes:
 - **description**: What is being evaluated
 - **scoring**: `binary` (pass/fail) or `scale` (1-5)
 - **weight**: Relative importance (0.0-1.0)
-- **evaluator**: `script` (DRIVE, mechanical) or `llm_judge` (ACQUIT, cross-model)
+- **evaluator**: `script` (mechanical, deterministic) or `llm_judge` (semantic)
 
-**Script evaluators** are DRIVE — mechanical checks that can be self-judged.
-**LLM judge evaluators** are ACQUIT — must be cross-model per acceptance-gate.md.
+**Note on roles.** rubric-gen is a DRIVE worker — it *generates* both script
+and llm_judge evaluators. Whether an evaluator is mechanical or semantic
+does not change rubric-gen's own role: it is always DRIVE. The ACQUIT
+verification of the generated rubric (correctness, coverage, that scripts
+actually run) is the job of the **`rubric-audit`** skill, run cross-model
+per `acceptance-gate.md`.
 
 ### Phase 3: Generate Evaluator Scripts
 
@@ -125,9 +135,12 @@ if [ -f "$EVAL_WIKI_SCRIPT" ]; then
 fi
 ```
 
-### Phase 5: Verify
+### Phase 5: Verify (self-check only — DRIVE)
 
-Check that all evaluator scripts exist and are valid Python:
+This is a **DRIVE self-check**, NOT an ACQUIT verdict. rubric-gen verifies
+only that the evaluator scripts it generated are syntactically valid Python
+and respond to `--help`. This does NOT constitute quality verification —
+that is the job of the `rubric-audit` ACQUIT skill (cross-model).
 
 ```bash
 VERIFY_FAILED=0
@@ -147,7 +160,10 @@ if [ "$VERIFY_FAILED" -eq 1 ]; then
 fi
 ```
 
-If verification fails, the rubric status stays "draft" and is not finalized.
+If self-check fails, the rubric status stays "draft" and is not finalized.
+After self-check passes, invoke the **`rubric-audit`** skill (different
+model family) to perform the true ACQUIT audit (completeness, usability,
+coverage) per `acceptance-gate.md`.
 
 ## Output
 
