@@ -92,7 +92,10 @@ python3 "$EVAL_WIKI_SCRIPT" init <wiki-root>
 ```
 
 ### `add-task`
-Add a task entity.
+Add a task entity. The `--goal`, `--input-spec`, `--expected-behavior`,
+`--preconditions`, and `--constraints` flags are rendered into the task
+body sections (测试目标 / 输入规格 / 预期输出 / 前置条件 / 边界条件);
+omit any of them to leave a `_TODO` stub for that section.
 
 ```bash
 python3 "$EVAL_WIKI_SCRIPT" add-task <wiki-root> \
@@ -102,8 +105,13 @@ python3 "$EVAL_WIKI_SCRIPT" add-task <wiki-root> \
   --max-turns <N> \
   --allowed-tools "<tool1,tool2>" \
   --expected-behavior "<description>" \
+  --goal "<what Agent capability this task verifies>" \
+  --input-spec "<initial input/prompt the Agent receives>" \
+  --preconditions "<environment state and mock service requirements>" \
+  --constraints "<boundary conditions / prohibited behaviors>" \
   [--cost <float>] \
   [--status <status>] \
+  [--scenario-id "<scenario:<slug>>"] \
   [--update]
 ```
 

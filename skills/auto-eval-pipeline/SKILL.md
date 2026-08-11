@@ -111,6 +111,8 @@ echo "- Cost: $COST" >> "$LOG_FILE"
 echo "- Count: $COUNT" >> "$LOG_FILE"
 
 # Generate tasks (stub — actual task-gen logic would read query_pack.md)
+# Each task MUST carry body content (goal/input/expected/preconditions/
+# constraints) so it is an effective spec, not a TODO stub.
 for i in $(seq 1 "$COUNT"); do
     TITLE="Evaluation Task $i - $(date +%Y%m%d)"
     python3 "$EVAL_WIKI_SCRIPT" add-task eval-wiki/ \
@@ -120,6 +122,10 @@ for i in $(seq 1 "$COUNT"); do
         --max-turns 1 \
         --allowed-tools "search" \
         --expected-behavior "Agent performs the task correctly" \
+        --goal "Verify the Agent can complete evaluation task $i within the turn budget" \
+        --input-spec "A natural-language evaluation prompt for task $i" \
+        --preconditions "eval-wiki is initialized; agent harness is reachable" \
+        --constraints "Agent must not exceed the turn budget or call disallowed tools" \
         --cost "$COST"
 done
 
