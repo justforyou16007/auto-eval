@@ -427,8 +427,18 @@ def add_task(
     status: str = "draft",
     update: bool = False,
     scenario_id: str = None,
+    goal: str = None,
+    input_spec: str = None,
+    preconditions: str = None,
+    constraints: str = None,
 ):
-    """Add a task to the wiki."""
+    """Add a task to the wiki.
+
+    Body sections (测试目标 / 输入规格 / 预期输出 / 前置条件 / 边界条件)
+    are populated from the corresponding content flags. When a flag is
+    omitted, a `_TODO` stub is kept so callers that fill the body later
+    (or that rely on the legacy default) are not broken.
+    """
     slug = slugify(title)
     filepath = os.path.join(wiki_root, "tasks", f"{slug}.md")
 
@@ -436,6 +446,10 @@ def add_task(
     if os.path.exists(filepath) and not update:
         print(f"Task already ingested: {slug} — skipping.")
         return filepath
+
+    # Normalize expected_behavior into a readable string for the body.
+    expected_behavior_items = split_csv(expected_behavior) if expected_behavior else []
+    expected_behavior_text = "; ".join(expected_behavior_items)
 
     # Build frontmatter
     fm = {
@@ -450,7 +464,7 @@ def add_task(
             "allowed_tools": split_csv(allowed_tools) if allowed_tools else [],
             "disallowed": split_csv(disallowed) if disallowed else [],
         },
-        "expected_behavior": split_csv(expected_behavior) if expected_behavior else [],
+        "expected_behavior": expected_behavior_items,
         "coverage_gaps": [f"gap:{g}" for g in split_csv(coverage_gap)] if coverage_gap else [],
         "status": status,
         "based_on": [normalize_node_id(b, "task") for b in split_csv(based_on)] if based_on else [],
@@ -458,23 +472,38 @@ def add_task(
         "added": now_utc_iso(),
     }
 
-    # Build body
+    # Build body — each section is filled from its content flag, falling
+    # back to a `_TODO` stub when the caller did not supply that content.
+    goal_body = (goal or "").strip() if goal else ""
+    goal_section = goal_body if goal_body else "_TODO: this task 要验证 Agent 的什么能力_"
+
+    input_spec_body = (input_spec or "").strip() if input_spec else ""
+    input_spec_section = input_spec_body if input_spec_body else "_TODO: Agent 接收的初始输入/prompt_"
+
+    expected_section = expected_behavior_text if expected_behavior_text else "_TODO: 期望的行为描述，非精确输出_"
+
+    preconditions_body = (preconditions or "").strip() if preconditions else ""
+    preconditions_section = preconditions_body if preconditions_body else "_TODO: 环境状态、mock 服务配置要求_"
+
+    constraints_body = (constraints or "").strip() if constraints else ""
+    constraints_section = constraints_body if constraints_body else "_TODO: Agent 不应做的事情、禁止的行为_"
+
     body = f"""# {title}
 
 ## 测试目标
-_TODO: this task 要验证 Agent 的什么能力_
+{goal_section}
 
 ## 输入规格
-_TODO: Agent 接收的初始输入/prompt_
+{input_spec_section}
 
 ## 预期输出
-_TODO: 期望的行为描述，非精确输出_
+{expected_section}
 
 ## 前置条件
-_TODO: 环境状态、mock 服务配置要求_
+{preconditions_section}
 
 ## 边界条件
-_TODO: Agent 不应做的事情、禁止的行为_
+{constraints_section}
 
 ## Connections
 _Edges are recorded in `graph/edges.jsonl`; summarize here for human readers._
@@ -1297,6 +1326,10 @@ def main():
     p_task.add_argument("--based-on", help="Based-on task IDs (CSV)")
     p_task.add_argument("--status", default="draft", help="Task status")
     p_task.add_argument("--scenario-id", default=None, help="Parent scenario ID")
+    p_task.add_argument("--goal", default=None, help="Test goal / what Agent capability this task verifies")
+    p_task.add_argument("--input-spec", default=None, help="Initial input/prompt the Agent receives")
+    p_task.add_argument("--preconditions", default=None, help="Environment state and mock service requirements")
+    p_task.add_argument("--constraints", default=None, help="Boundary conditions / prohibited behaviors")
     p_task.add_argument("--update", action="store_true", help="Update existing task")
     p_scenario = subparsers.add_parser("add-scenario", help="Add a scenario")
     p_scenario.add_argument("wiki_root", help="Path to wiki root")
@@ -1435,6 +1468,10 @@ def main():
                 status=args.status,
                 scenario_id=args.scenario_id,
                 update=args.update,
+                goal=args.goal,
+                input_spec=args.input_spec,
+                preconditions=args.preconditions,
+                constraints=args.constraints,
             )
 
         elif args.command == "add-env":

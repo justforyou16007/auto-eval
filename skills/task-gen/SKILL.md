@@ -96,7 +96,13 @@ Scenarios serve as "seeds" — Phase 2 reads them and produces concrete tasks.
 ### Phase 2: Task Generation (rewritten)
 
 Read generated scenarios from eval-wiki. For each scenario, generate M concrete
-tasks (default M=3).
+tasks (default M=3). **Each task MUST carry concrete content derived from its
+parent scenario — do not leave the body sections as `_TODO` stubs.** The
+`add-task` command renders the supplied `--goal`, `--input-spec`,
+`--expected-behavior`, `--preconditions`, and `--constraints` into the
+corresponding body sections (测试目标 / 输入规格 / 预期输出 / 前置条件 /
+边界条件). When any of these is omitted the section falls back to a `_TODO`
+stub, so supply all of them from the scenario description.
 
 Each task includes:
 - Title
@@ -106,7 +112,10 @@ Each task includes:
 - Max turns
 - Allowed tools
 - Expected behavior
-- Agent constraints
+- Test goal (`--goal`)
+- Input spec (`--input-spec`)
+- Preconditions (`--preconditions`)
+- Boundary constraints (`--constraints`)
 - Coverage gaps
 - **scenario_id** — reference to parent scenario
 
@@ -117,7 +126,8 @@ if [ -f "$EVAL_WIKI_SCRIPT" ]; then
 fi
 ```
 
-For each scenario, generate tasks and write them:
+For each scenario, generate tasks and write them — filling every body section
+from the scenario context so the task file is an effective spec, not a TODO stub:
 
 ```bash
 if [ -f "$EVAL_WIKI_SCRIPT" ]; then
@@ -128,10 +138,15 @@ if [ -f "$EVAL_WIKI_SCRIPT" ]; then
       --max-turns "$MAX_TURNS" \
       --allowed-tools "$TOOLS" \
       --expected-behavior "$BEHAVIOR" \
+      --goal "$GOAL" \
+      --input-spec "$INPUT_SPEC" \
+      --preconditions "$PRECONDITIONS" \
+      --constraints "$CONSTRAINTS" \
       --cost "$COST" \
       --scenario-id "$SCENARIO_ID"
 fi
 ```
+
 
 ### Phase 3: Post-write
 
