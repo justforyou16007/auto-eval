@@ -80,10 +80,10 @@ class TestReadmeContent(unittest.TestCase):
         self.assertIn("├── auto-eval-pipeline/", self.content,
                       "Project Structure should include auto-eval-pipeline/ under skills/")
 
-    def test_07_project_structure_says_9_modules(self):
-        """Project Structure says '9 modules' for skills."""
-        self.assertIn("9 modules", self.content,
-                      "Project Structure should say 9 modules")
+    def test_07_project_structure_says_14_modules(self):
+        """Project Structure says '14 modules' for skills (9 original + 5 audit)."""
+        self.assertIn("14 modules", self.content,
+                      "Project Structure should say 14 modules")
 
     def test_08_architecture_diagram_includes_setup(self):
         """Architecture diagram includes setup and auto-eval-pipeline skills."""
@@ -92,10 +92,10 @@ class TestReadmeContent(unittest.TestCase):
         self.assertIn("auto-eval-pipeline", self.content,
                       "Architecture diagram should include auto-eval-pipeline")
 
-    def test_09_layer_3_says_9_skill_modules(self):
-        """Layer 3 description says '9 skill modules'."""
-        self.assertIn("9 skill modules", self.content,
-                      "Layer 3 description should say 9 skill modules")
+    def test_09_layer_3_says_14_skill_modules(self):
+        """Layer 3 description says '14 skill modules' (9 original + 5 audit)."""
+        self.assertIn("14 skill modules", self.content,
+                      "Layer 3 description should say 14 skill modules")
 
     def test_10_quick_start_mentions_bilingual_setup(self):
         """Quick Start mentions bilingual setup wizard."""

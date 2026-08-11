@@ -147,12 +147,17 @@ SKILLS=(
     "auto-eval-pipeline"
     "env-component-manager"
     "env-gen"
+    "env-audit"
     "eval-wiki"
     "feedback-align"
+    "feedback-audit"
     "report-gen"
+    "report-audit"
     "rubric-gen"
+    "rubric-audit"
     "setup"
     "task-gen"
+    "task-audit"
 )
 
 TOOLS=(
