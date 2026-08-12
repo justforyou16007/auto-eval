@@ -145,6 +145,9 @@ fi
 # ---------------------------------------------------------------------------
 SKILLS=(
     "auto-eval-pipeline"
+    "benchmark-compare"
+    "benchmark-search"
+    "benchmark2-evaluator"
     "env-component-manager"
     "env-gen"
     "env-audit"
@@ -155,6 +158,7 @@ SKILLS=(
     "report-audit"
     "rubric-gen"
     "rubric-audit"
+    "scorecard-evaluator"
     "setup"
     "task-gen"
     "task-audit"
